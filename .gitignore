@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+*.log
+
+# Virtual environments
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# IDE / editor settings
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# AWS / Cloud keys and configs
+*.pem
+*.key
+*.crt
+*.csr
+*.pub
+*.csv
+*.json
+*.yaml
+*.yml
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Other build artifacts
+dist/
+build/
+*.out
+*.o
+*.so

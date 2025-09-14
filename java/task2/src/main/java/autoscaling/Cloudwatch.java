@@ -1,6 +1,9 @@
 package autoscaling;
 
 import software.amazon.awssdk.services.cloudwatch.CloudWatchClient;
+import software.amazon.awssdk.services.cloudwatch.model.Dimension;
+import software.amazon.awssdk.services.cloudwatch.model.PutMetricAlarmRequest;
+import software.amazon.awssdk.services.cloudwatch.model.Statistic;
 
 import static autoscaling.AutoScale.configuration;
 
@@ -53,8 +56,21 @@ public final class Cloudwatch {
      */
     public static void createScaleOutAlarm(final CloudWatchClient cloudWatch,
                                            final String policyArn) {
-        // TODO: Create Scale Out Alarm
-        throw new UnsupportedOperationException("Not yet implemented.");
+        cloudWatch.putMetricAlarm(PutMetricAlarmRequest.builder()
+                .alarmName("cpu-scale-out")
+                .namespace("AWS/EC2")
+                .metricName("CPUUtilization")
+                .dimensions(Dimension.builder()
+                .name("AutoScalingGroupName").value(AutoScale.AUTO_SCALING_GROUP_NAME).build())
+                .statistic(Statistic.AVERAGE)
+                .period(ALARM_PERIOD)
+                .evaluationPeriods(ALARM_EVALUATION_PERIODS_SCALE_OUT)
+                .comparisonOperator("GreaterThanThreshold")
+                .threshold(CPU_UPPER_THRESHOLD)
+                .treatMissingData("missing")
+                .alarmActions(policyArn)
+                .unit("Percent")
+                .build());
     }
 
     /**
@@ -65,8 +81,21 @@ public final class Cloudwatch {
      */
     public static void createScaleInAlarm(final CloudWatchClient cloudWatch,
                                           final String policyArn) {
-        // TODO: Create Scale In Alarm
-        throw new UnsupportedOperationException("Not yet implemented.");
+        cloudWatch.putMetricAlarm(PutMetricAlarmRequest.builder()
+                .alarmName("cpu-scale-in")
+                .namespace("AWS/EC2")
+                .metricName("CPUUtilization")
+                .dimensions(Dimension.builder()
+                .name("AutoScalingGroupName").value(AutoScale.AUTO_SCALING_GROUP_NAME).build())
+                .statistic("Average")
+                .period(ALARM_PERIOD)
+                .evaluationPeriods(ALARM_EVALUATION_PERIODS_SCALE_IN)
+                .comparisonOperator("LessThanThreshold")
+                .threshold(CPU_LOWER_THRESHOLD)
+                .treatMissingData("notBreaching")
+                .alarmActions(policyArn)
+                .unit("Percent")
+                .build());
     }
 
     /**
@@ -75,7 +104,8 @@ public final class Cloudwatch {
      * @param cloudWatch cloud watch client
      */
     public static void deleteAlarms(final CloudWatchClient cloudWatch) {
-        // TODO: Delete two created Alarms
-        throw new UnsupportedOperationException("Not yet implemented.");
+        try { 
+                cloudWatch.deleteAlarms(b -> b.alarmNames("cpu-scale-out", "cpu-scale-in")); 
+        } catch (Exception ignore) { }
     }
 }

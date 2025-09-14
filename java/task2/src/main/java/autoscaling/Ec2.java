@@ -1,10 +1,34 @@
 package autoscaling;
 
 import software.amazon.awssdk.services.ec2.Ec2Client;
+import software.amazon.awssdk.services.ec2.model.AuthorizeSecurityGroupIngressRequest;
+import software.amazon.awssdk.services.ec2.model.CreateLaunchTemplateRequest;
+import software.amazon.awssdk.services.ec2.model.CreateSecurityGroupRequest;
+import software.amazon.awssdk.services.ec2.model.CreateSecurityGroupResponse;
+import software.amazon.awssdk.services.ec2.model.DeleteLaunchTemplateRequest;
+import software.amazon.awssdk.services.ec2.model.DescribeInstancesRequest;
+import software.amazon.awssdk.services.ec2.model.DescribeInstancesResponse;
+import software.amazon.awssdk.services.ec2.model.DescribeSecurityGroupsRequest;
+import software.amazon.awssdk.services.ec2.model.DescribeSecurityGroupsResponse;
+import software.amazon.awssdk.services.ec2.model.DescribeVpcsResponse;
+import software.amazon.awssdk.services.ec2.model.Filter;
 import software.amazon.awssdk.services.ec2.model.Instance;
+import software.amazon.awssdk.services.ec2.model.InstanceType;
+import software.amazon.awssdk.services.ec2.model.IpPermission;
+import software.amazon.awssdk.services.ec2.model.IpRange;
+import software.amazon.awssdk.services.ec2.model.Ipv6Range;
+import software.amazon.awssdk.services.ec2.model.LaunchTemplateTagSpecificationRequest;
+import software.amazon.awssdk.services.ec2.model.LaunchTemplatesMonitoringRequest;
+import software.amazon.awssdk.services.ec2.model.RequestLaunchTemplateData;
+import software.amazon.awssdk.services.ec2.model.ResourceType;
+import software.amazon.awssdk.services.ec2.model.RunInstancesMonitoringEnabled;
+import software.amazon.awssdk.services.ec2.model.RunInstancesRequest;
+import software.amazon.awssdk.services.ec2.model.RunInstancesResponse;
 import software.amazon.awssdk.services.ec2.model.Tag;
 import software.amazon.awssdk.services.ec2.model.TagSpecification;
+import software.amazon.awssdk.services.ec2.model.TerminateInstancesRequest;
 import software.amazon.awssdk.services.ec2.model.Vpc;
+import software.amazon.awssdk.services.ec2.waiters.Ec2Waiter;
 
 import java.util.Arrays;
 import java.util.List;
@@ -51,8 +75,33 @@ public final class Ec2 {
                                           final String instanceType,
                                           final String securityGroupId,
                                           final Boolean detailedMonitoring) throws InterruptedException {
-        // TODO: Launch a new Instance
-        throw new UnsupportedOperationException("Not yet implemented.");
+        RunInstancesRequest runInstancesRequest = RunInstancesRequest.builder()
+                .imageId(amiId)
+                .instanceType(InstanceType.fromValue(instanceType))
+                .minCount(1)
+                .maxCount(1)
+                .monitoring(RunInstancesMonitoringEnabled.builder().enabled(true).build())
+                .securityGroupIds(securityGroupId)
+                .tagSpecifications(tagSpecification)
+                .build();
+
+        RunInstancesResponse runResponse = ec2.runInstances(runInstancesRequest);
+        if (runResponse.instances().isEmpty()) {
+            throw new RuntimeException("Failed to launch instance.");
+        }
+
+        String instanceId = runResponse.instances().get(0).instanceId();
+
+        Ec2Waiter waiter = ec2.waiter();
+        waiter.waitUntilInstanceRunning(DescribeInstancesRequest.builder().instanceIds(instanceId).build());
+
+        DescribeInstancesResponse desc =
+                ec2.describeInstances(DescribeInstancesRequest.builder().instanceIds(instanceId).build());
+        if (!desc.reservations().isEmpty() && !desc.reservations().get(0).instances().isEmpty()) {
+            return desc.reservations().get(0).instances().get(0);
+        }
+            
+        throw new RuntimeException("Instance " + instanceId + " not found.");
     }
 
     /**
@@ -66,9 +115,55 @@ public final class Ec2 {
     public static String getOrCreateHttpSecurityGroup(final Ec2Client ec2,
                                                       final String securityGroupName,
                                                       final String vpcId) {
-        // TODO: Get or Create a Security Group if necessary
-        // TODO: Authorize ingress HTTP traffic
-        throw new UnsupportedOperationException("Not yet implemented.");
+        // Check if the security group already exists
+        DescribeSecurityGroupsResponse existing = ec2.describeSecurityGroups(
+            DescribeSecurityGroupsRequest.builder()
+                    .filters(
+                            Filter.builder().name("group-name").values(securityGroupName).build(),
+                            Filter.builder().name("vpc-id").values(vpcId).build()
+                    )
+                    .build()
+        );
+
+        if (!existing.securityGroups().isEmpty()) {
+            return existing.securityGroups().get(0).groupId();
+        }
+
+        // Create the Security Group
+        CreateSecurityGroupRequest createRequest = CreateSecurityGroupRequest.builder()
+                .groupName(securityGroupName)
+                .description("SG for " + securityGroupName)
+                .vpcId(vpcId)
+                .build();
+
+        CreateSecurityGroupResponse createResponse = ec2.createSecurityGroup(createRequest);
+        String securityGroupId = createResponse.groupId();
+
+        // Authorize HTTP Inbound Rule (Port 80)
+        IpRange ipRange = IpRange.builder()
+                .cidrIp("0.0.0.0/0") // Allow from anywhere
+                .build();
+
+        Ipv6Range ipv6Range = Ipv6Range.builder()
+                .cidrIpv6("::/0") // Allow from anywhere
+                .build();
+
+        IpPermission ipPermission = IpPermission.builder()
+                .ipProtocol("tcp")
+                .fromPort(80)
+                .toPort(80)
+                .ipRanges(ipRange)
+                .ipv6Ranges(ipv6Range)
+                .build();
+
+        AuthorizeSecurityGroupIngressRequest authorizeRequest = AuthorizeSecurityGroupIngressRequest.builder()
+                .groupId(securityGroupId)
+                .ipPermissions(ipPermission)
+                .build();
+
+        ec2.authorizeSecurityGroupIngress(authorizeRequest);
+
+        return securityGroupId;
     }
 
     /**
@@ -88,8 +183,21 @@ public final class Ec2 {
      * @return the default VPC object
      */
     public static Vpc getDefaultVPC(final Ec2Client ec2) {
-        // TODO: Return the default VPC
-        throw new UnsupportedOperationException("Not yet implemented.");
+        // Build a filter to find the default VPC
+        Filter defaultVpcFilter = Filter.builder()
+                .name("isDefault")
+                .values("true")
+                .build();
+
+        // Describe VPCs with that filter
+        DescribeVpcsResponse response = ec2.describeVpcs(r -> r.filters(defaultVpcFilter));
+
+        if (!response.vpcs().isEmpty()) {
+            // Return the first (and only) default VPC
+            return response.vpcs().get(0);
+        } else {
+            throw new RuntimeException("No default VPC found in this region!");
+        }
     }
 
     /**
@@ -98,8 +206,31 @@ public final class Ec2 {
      * @param ec2 Ec2 Client
      */
     static void createLaunchTemplate(final Ec2Client ec2) {
-        // TODO: Create a Launch Template
-        throw new UnsupportedOperationException("Not yet implemented.");
+        try {
+            LaunchTemplateTagSpecificationRequest tagSpec =
+                LaunchTemplateTagSpecificationRequest.builder()
+                    .resourceType(ResourceType.INSTANCE.toString())
+                    .tags(EC2_TAGS_LIST)
+                    .build();
+
+            String securityGroupIds = getOrCreateHttpSecurityGroup(
+                    ec2, AutoScale.ELBASG_SECURITY_GROUP, getDefaultVPC(ec2).vpcId());
+
+            RequestLaunchTemplateData data = RequestLaunchTemplateData.builder()
+                .imageId(AutoScale.WEB_SERVICE)
+                .instanceType(InstanceType.fromValue(AutoScale.INSTANCE_TYPE))
+                .monitoring(LaunchTemplatesMonitoringRequest.builder().enabled(true).build())
+                .securityGroupIds(securityGroupIds)
+                .tagSpecifications(tagSpec)
+                .build();
+
+            ec2.createLaunchTemplate(
+                CreateLaunchTemplateRequest.builder()
+                    .launchTemplateName(AutoScale.LAUNCH_TEMPLATE_NAME)
+                    .launchTemplateData(data)
+                    .build()
+            );
+        } catch (Exception ignore) { }
     }
 
     /**
@@ -109,8 +240,10 @@ public final class Ec2 {
      * @param instanceId Instance Id to terminate
      */
     public static void terminateInstance(final Ec2Client ec2, final String instanceId) {
-        // TODO: Terminate an Instance
-        throw new UnsupportedOperationException("Not yet implemented.");
+        try {
+            ec2.terminateInstances(TerminateInstancesRequest.builder()
+                .instanceIds(instanceId).build());
+        } catch (Exception ignore) { }
     }
 
     /**
@@ -121,8 +254,9 @@ public final class Ec2 {
      */
     public static void deleteSecurityGroup(final Ec2Client ec2,
                                            final String elbSecurityGroup) {
-        // TODO: Delete a Security Group
-        throw new UnsupportedOperationException("Not yet implemented.");
+        try {
+            ec2.deleteSecurityGroup(b -> b.groupId(elbSecurityGroup));
+        } catch (Exception ignore) { }
     }
 
     /**
@@ -131,7 +265,9 @@ public final class Ec2 {
      * @param ec2 Ec2 Client instance
      */
     public static void deleteLaunchTemplate(final Ec2Client ec2) {
-        // TODO: Delete a Launch Template
-        throw new UnsupportedOperationException("Not yet implemented.");
+        try {
+            ec2.deleteLaunchTemplate(DeleteLaunchTemplateRequest.builder()
+                .launchTemplateName(AutoScale.LAUNCH_TEMPLATE_NAME).build());
+        } catch (Exception ignore) { }
     }
 }

@@ -4,6 +4,10 @@ import java.util.Arrays;
 import java.util.List;
 
 import software.amazon.awssdk.services.autoscaling.AutoScalingClient;
+import software.amazon.awssdk.services.autoscaling.model.CreateAutoScalingGroupRequest;
+import software.amazon.awssdk.services.autoscaling.model.DeleteAutoScalingGroupRequest;
+import software.amazon.awssdk.services.autoscaling.model.PutScalingPolicyRequest;
+import software.amazon.awssdk.services.autoscaling.model.PutScalingPolicyResponse;
 import software.amazon.awssdk.services.autoscaling.model.Tag;
 import software.amazon.awssdk.services.cloudwatch.CloudWatchClient;
 
@@ -91,10 +95,49 @@ public final class Aas {
      */
     public static void createAutoScalingGroup(final AutoScalingClient aas,
                                               final CloudWatchClient cloudWatch,
-                                              final String targetGroupArn) {
-        // TODO: Create an Auto Scaling Group with a launch template
-        // TODO: Create and attach CloudWatch policies to the Auto Scaling Group
-        throw new UnsupportedOperationException("Not yet implemented.");
+                                              final String targetGroupArn,
+                                              final java.util.List<String> subnetIds) {
+        // Create an Auto Scaling Group
+        CreateAutoScalingGroupRequest autoScalingGroupRequest = CreateAutoScalingGroupRequest.builder()
+                .autoScalingGroupName(AutoScale.AUTO_SCALING_GROUP_NAME)
+                .minSize(MIN_SIZE_ASG)
+                .maxSize(MAX_SIZE_ASG)
+                .desiredCapacity(MIN_SIZE_ASG)
+                .defaultCooldown(COOLDOWN_PERIOD_ASG)
+                .targetGroupARNs(targetGroupArn)
+                .launchTemplate(b -> b.launchTemplateName(AutoScale.LAUNCH_TEMPLATE_NAME))
+                .healthCheckType("EC2")
+                .healthCheckGracePeriod(HEALTH_CHECK_GRACE_PERIOD)
+                .vpcZoneIdentifier(String.join(",", subnetIds))
+                .tags(AAS_TAGS_LIST)
+                .build();
+
+        aas.createAutoScalingGroup(autoScalingGroupRequest); 
+
+        waitForAsgVisible(aas, AutoScale.AUTO_SCALING_GROUP_NAME, 60, 1000);
+
+        // Scaling policies
+        PutScalingPolicyResponse scaleOut =
+                aas.putScalingPolicy(PutScalingPolicyRequest.builder()
+                .policyName("scale-out-1")
+                .autoScalingGroupName(AutoScale.AUTO_SCALING_GROUP_NAME)
+                .adjustmentType("ChangeInCapacity")
+                .cooldown(COOLDOWN_PERIOD_SCALEOUT)
+                .scalingAdjustment(SCALING_OUT_ADJUSTMENT)
+                .build());
+
+        PutScalingPolicyResponse scaleIn =
+                aas.putScalingPolicy(PutScalingPolicyRequest.builder()
+                .policyName("scale-in-1")
+                .autoScalingGroupName(AutoScale.AUTO_SCALING_GROUP_NAME)
+                .adjustmentType("ChangeInCapacity")
+                .cooldown(COOLDOWN_PERIOD_SCALEIN)
+                .scalingAdjustment(SCALING_IN_ADJUSTMENT)
+                .build());
+
+        // Alarms wired to policy
+        Cloudwatch.createScaleOutAlarm(cloudWatch, scaleOut.policyARN());
+        Cloudwatch.createScaleInAlarm(cloudWatch, scaleIn.policyARN());
     }
 
     /**
@@ -103,7 +146,24 @@ public final class Aas {
      * @param aas AAS client
      */
     public static void terminateAutoScalingGroup(final AutoScalingClient aas) {
-        // TODO: Delete the Auto Scaling Group
-        throw new UnsupportedOperationException("Not yet implemented.");
+        try {
+                aas.deleteAutoScalingGroup(DeleteAutoScalingGroupRequest.builder()
+                        .autoScalingGroupName(AutoScale.AUTO_SCALING_GROUP_NAME)
+                        .forceDelete(true).build());
+        } catch (Exception ignore) { }
+    }
+
+    private static void waitForAsgVisible(AutoScalingClient aas, String asgName, int attempts, long sleepMs) {
+        for (int i = 0; i < attempts; i++) {
+                try {
+                if (!aas.describeAutoScalingGroups(b -> b.autoScalingGroupNames(asgName))
+                        .autoScalingGroups().isEmpty()) return;
+                } catch (Exception e) { }
+
+                try { Thread.sleep(sleepMs); } 
+                catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+        }
+
+        throw new RuntimeException("ASG " + asgName + " did not become visible in time.");
     }
 }

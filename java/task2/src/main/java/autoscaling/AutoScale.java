@@ -14,10 +14,15 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.autoscaling.AutoScalingClient;
 import software.amazon.awssdk.services.cloudwatch.CloudWatchClient;
 import software.amazon.awssdk.services.ec2.Ec2Client;
+import software.amazon.awssdk.services.ec2.model.DescribeSubnetsRequest;
+import software.amazon.awssdk.services.ec2.model.DescribeSubnetsResponse;
 import software.amazon.awssdk.services.ec2.model.Instance;
+import software.amazon.awssdk.services.ec2.model.ResourceType;
 import software.amazon.awssdk.services.ec2.model.Tag;
+import software.amazon.awssdk.services.ec2.model.TagSpecification;
 import software.amazon.awssdk.services.elasticloadbalancingv2.ElasticLoadBalancingV2Client;
-
+import software.amazon.awssdk.services.elasticloadbalancingv2.model.LoadBalancer;
+import software.amazon.awssdk.services.elasticloadbalancingv2.model.TargetGroup;
 import utilities.Configuration;
 
 
@@ -219,17 +224,35 @@ public final class AutoScale {
                                                       final AutoScalingClient aas,
                                                       final ElasticLoadBalancingV2Client elb,
                                                       final CloudWatchClient cloudWatch) {
-        // TODO: Create a Load Balancer and a Target Group
-        // TODO: Create an Auto Scaling Group and attach a Launch Template
-        
-        String targetGroupArn = null;
-        String loadBalancerDNS = null;
-        String loadBalancerArn = null;
+        String vpcId = Ec2.getDefaultVPC(ec2).vpcId();
+        String securityGroupIds = Ec2.getOrCreateHttpSecurityGroup(ec2, ELBASG_SECURITY_GROUP, vpcId);
+
+        // Create Target Group
+        TargetGroup targetGroup = Elb.createTargetGroup(elb, ec2);
+        String targetGroupArn = targetGroup.targetGroupArn();
+
+        DescribeSubnetsResponse subnetsResponse = ec2.describeSubnets(DescribeSubnetsRequest.builder().build());
+        java.util.List<String> subnetIds = new java.util.ArrayList<>();
+        for (int i = 0; i < subnetsResponse.subnets().size() && subnetIds.size() < 2; i++) {
+            subnetIds.add(subnetsResponse.subnets().get(i).subnetId());
+        }
+
+        // Create Application Load Balancer
+        LoadBalancer loadBalancer = Elb.createLoadBalancer(elb, ec2, securityGroupIds, targetGroupArn);
+        String loadBalancerDNS = loadBalancer.dnsName();
+        String loadBalancerArn = loadBalancer.loadBalancerArn();
+
+        // Create Launch Template for Auto Scaling Group instances
+        Ec2.createLaunchTemplate(ec2);
+
+        // Create Auto Scaling Group
+        Aas.createAutoScalingGroup(aas, cloudWatch, targetGroupArn, subnetIds);
 
         ResourceConfig resourceConfig = new ResourceConfig();
         resourceConfig.setTargetGroupArn(targetGroupArn);
         resourceConfig.setLoadBalancerArn(loadBalancerArn);
         resourceConfig.setLoadBalancerDns(loadBalancerDNS);
+        resourceConfig.setSubnets(subnetIds);
         return resourceConfig;
     }
 
@@ -242,8 +265,22 @@ public final class AutoScale {
      */
     public static ResourceConfig initializeTestResources(final Ec2Client ec2,
                                                          final ResourceConfig config) throws InterruptedException {
-        // TODO: Create a Load Generator Instance
-        Instance loadGenerator = null;
+        String vpcId = Ec2.getDefaultVPC(ec2).vpcId();
+        String securityGroupIds = Ec2.getOrCreateHttpSecurityGroup(ec2, LG_SECURITY_GROUP, vpcId);
+
+        TagSpecification tagSpec = TagSpecification.builder()
+            .resourceType(ResourceType.INSTANCE)
+            .tags(LG_TAGS_LIST)
+            .build();
+
+        Instance loadGenerator = Ec2.launchInstance(
+            ec2,
+            tagSpec,
+            LOAD_GENERATOR_AMI_ID,
+            INSTANCE_TYPE,
+            securityGroupIds,
+            false
+        );
         
         config.setLoadGeneratorDns(loadGenerator.publicDnsName());
         config.setLoadGeneratorID(loadGenerator.instanceId());
@@ -337,7 +374,35 @@ public final class AutoScale {
                                final ElasticLoadBalancingV2Client elb,
                                final CloudWatchClient cloudWatch,
                                final ResourceConfig resourceConfig) {
-        // TODO: Destroy resources in an appropriate order
-        throw new UnsupportedOperationException("Not yet implemented.");
+        // Delete CloudWatch alarms
+        try {
+            Cloudwatch.deleteAlarms(cloudWatch);
+        } catch (Exception ignore) { }
+
+        // Delete Auto Scaling Group
+        try {
+            Aas.terminateAutoScalingGroup(aas);
+        } catch (Exception ignore) { }
+
+        // Delete Application Load Balancer
+        try {
+            if (resourceConfig.getLoadBalancerArn() != null) {
+                Elb.deleteLoadBalancer(elb, resourceConfig.getLoadBalancerArn());
+            }
+        } catch (Exception ignore) { }
+
+        try { Thread.sleep(5000L); } catch (InterruptedException ignore) { }
+
+        // Delete Target Group
+        try {
+            if (resourceConfig.getTargetGroupArn() != null) {
+                Elb.deleteTargetGroup(elb, resourceConfig.getTargetGroupArn());
+            }
+        } catch (Exception ignore) { }
+
+        // Delete Launch Template
+        try {
+            Ec2.deleteLaunchTemplate(ec2);
+        } catch (Exception ignore) { }
     }
 }

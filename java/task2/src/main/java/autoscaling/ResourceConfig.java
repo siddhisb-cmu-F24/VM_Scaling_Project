@@ -1,5 +1,7 @@
 package autoscaling;
 
+import java.util.List;
+
 /**
  * Resource Configuration Class.
  */
@@ -29,6 +31,11 @@ public class ResourceConfig {
      * Load Balancer DNS.
      */
     private String loadBalancerDns;
+
+    /**
+     * Subnets.
+     */
+    private List<String> subnets;
 
     public String getLoadGeneratorID() {
         return loadGeneratorID;
@@ -69,5 +76,13 @@ public class ResourceConfig {
 
     public void setLoadBalancerDns(String loadBalancerDns) {
         this.loadBalancerDns = loadBalancerDns;
+    }
+
+    public List<String> getSubnets() { 
+        return subnets; 
+    }
+    
+    public void setSubnets(List<String> subnets) { 
+        this.subnets = subnets; 
     }
 }
